@@ -1,0 +1,60 @@
+name: Scan plugins
+on: workflow_dispatch
+
+env:
+  BATCH_SIZE: 2        # test value; use ~25 for the big run
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.make.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: make
+        run: |
+          total=$(grep -c . plugins.txt)
+          batches=$(( (total + BATCH_SIZE - 1) / BATCH_SIZE ))
+          echo "matrix=$(jq -c -n --argjson n "$batches" '[range(0;$n)]')" >> "$GITHUB_OUTPUT"
+
+  scan:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        batch: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Download and scan this batch
+        run: |
+          start=$(( ${{ matrix.batch }} * BATCH_SIZE + 1 ))
+          end=$(( start + BATCH_SIZE - 1 ))
+          sed -n "${start},${end}p" plugins.txt > batch.txt
+          mkdir -p work results
+
+          while read -r slug; do
+            [ -z "$slug" ] && continue
+            if ! curl -fsSL -o p.zip "https://downloads.wordpress.org/plugin/${slug}.latest-stable.zip"; then
+              echo "$slug: download failed" >> results/failed.txt
+              continue
+            fi
+            unzip -q -o p.zip -d "work/$slug"
+            semgrep scan --config rules/ --sarif -o "results/${slug}.sarif" "work/$slug" \
+              || echo "$slug: scan failed" >> results/failed.txt
+            rm -rf "work/$slug" p.zip
+            sleep 1
+          done < batch.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-batch-${{ matrix.batch }}
+          path: results/
+          if-no-files-found: ignore
