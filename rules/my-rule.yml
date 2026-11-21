@@ -1,0 +1,80 @@
+rules:
+  - id: wordpress-object-injection-taint
+    mode: taint
+    languages: [php]
+    severity: ERROR
+    options:
+      interfile: true
+      taint_assume_safe_numbers: true
+      taint_assume_safe_booleans: true
+    message: >-
+      User-controlled data reaches unserialize()/maybe_unserialize() without
+      restricting allowed_classes. This can lead to PHP object injection
+      (POP chain gadgets in the plugin, WordPress core, or other plugins).
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      category: security
+      technology: [wordpress, php]
+      confidence: MEDIUM
+
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: $_FILES
+          - patterns:
+              - pattern: $_SERVER[$KEY]
+              - metavariable-regex:
+                  metavariable: $KEY
+                  regex: ^['"]?(HTTP_.*|QUERY_STRING|REQUEST_URI|PATH_INFO|PHP_SELF)['"]?$
+          - pattern: filter_input(...)
+          - pattern: filter_input_array(...)
+          - pattern: get_query_var(...)
+          - pattern: $REQ->get_param(...)
+          - pattern: $REQ->get_params(...)
+          - pattern: $REQ->get_body_params(...)
+          - pattern: $REQ->get_query_params(...)
+          - pattern: $REQ->get_json_params(...)
+          - pattern: $REQ->get_header(...)
+          - pattern: $REQ->get_body(...)
+          - pattern: file_get_contents("php://input")
+          # Remote data
+          - pattern: wp_remote_retrieve_body(...)
+          # Second-order sources (noisy; uncomment for recall testing)
+          # - pattern: get_option(...)
+          # - pattern: get_site_option(...)
+          # - pattern: get_post_meta(...)
+          # - pattern: get_user_meta(...)
+          # - pattern: get_term_meta(...)
+          # - pattern: get_transient(...)
+
+    pattern-sanitizers:
+      # Output that can't carry a serialized payload
+      - pattern-either:
+          - pattern: intval(...)
+          - pattern: absint(...)
+          - pattern: floatval(...)
+          - pattern: boolval(...)
+          - pattern: md5(...)
+          - pattern: sha1(...)
+          - pattern: crc32(...)
+          - pattern: hash(...)
+          - pattern: wp_hash(...)
+          - pattern: bin2hex(...)
+          - pattern: strlen(...)
+          - pattern: count(...)
+          - pattern: (int) $X
+          - pattern: (float) $X
+          - pattern: (bool) $X
+
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: unserialize($X, ...)
+              - pattern: maybe_unserialize($X)
+          # Safe: allowed_classes => false
+          - pattern-not: unserialize($X, [..., 'allowed_classes' => false, ...])
+          - pattern-not: unserialize($X, [..., "allowed_classes" => false, ...])
+          - focus-metavariable: $X
